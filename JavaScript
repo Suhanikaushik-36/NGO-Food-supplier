@@ -1,0 +1,582 @@
+// ============================================
+// DATA STORAGE
+// ============================================
+let ngos = [];
+let donations = [];
+let allocationResults = [];
+let totalFoodStock = 500;
+
+// ============================================
+// INITIALIZATION
+// ============================================
+document.addEventListener('DOMContentLoaded', () => {
+    loadNGOs();
+    loadFoodStock();
+    setupTabs();
+    setupEventListeners();
+});
+
+function setupTabs() {
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const tabId = btn.getAttribute('data-tab');
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+            btn.classList.add('active');
+            document.getElementById(`${tabId}-tab`).classList.add('active');
+        });
+    });
+}
+
+function setupEventListeners() {
+    // Enter key for search
+    document.getElementById('search-ngo')?.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            filterNGOs(e.target.value);
+        }
+    });
+}
+
+// ============================================
+// API CALLS (C++ Backend)
+// ============================================
+async function loadNGOs() {
+    try {
+        const response = await fetch('/api/ngos');
+        ngos = await response.json();
+        displayNGOs(ngos);
+    } catch (error) {
+        console.error('Error loading NGOs:', error);
+    }
+}
+
+async function loadFoodStock() {
+    try {
+        const response = await fetch('/api/food-stock');
+        const data = await response.json();
+        totalFoodStock = data.foodStock;
+        document.getElementById('food-stock-display').textContent = totalFoodStock;
+    } catch (error) {
+        console.error('Error loading food stock:', error);
+    }
+}
+
+async function addNGO() {
+    const name = document.getElementById('ngo-name').value;
+    const urgency = parseInt(document.getElementById('ngo-urgency').value);
+    const beneficiaries = parseInt(document.getElementById('ngo-beneficiaries').value);
+    const quantity = parseInt(document.getElementById('ngo-quantity').value);
+    
+    if (!name) {
+        alert('Please enter NGO name');
+        return;
+    }
+    
+    const ngo = { name, urgency, beneficiaries, quantity };
+    
+    try {
+        const response = await fetch('/api/ngos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(ngo)
+        });
+        
+        if (response.ok) {
+            hideAddNGOForm();
+            loadNGOs();
+            alert('NGO added successfully!');
+        }
+    } catch (error) {
+        console.error('Error adding NGO:', error);
+    }
+}
+
+async function calculatePriorities() {
+    try {
+        const response = await fetch('/api/calculate-priority', {
+            method: 'POST'
+        });
+        
+        if (response.ok) {
+            ngos = await response.json();
+            displayNGOs(ngos);
+            alert('✅ Priority scores calculated using C++ algorithm!\n\nFormula: Priority = (Urgency × 60) + (Beneficiaries × 40)');
+        }
+    } catch (error) {
+        console.error('Error calculating priorities:', error);
+    }
+}
+
+async function addFoodDonation() {
+    const supplier = document.getElementById('supplier-name').value;
+    const foodType = document.getElementById('food-type').value;
+    const quantity = parseInt(document.getElementById('food-quantity').value);
+    
+    if (!supplier) {
+        alert('Please enter supplier name');
+        return;
+    }
+    
+    // Add to donations array (frontend)
+    donations.unshift({
+        date: new Date().toLocaleString(),
+        supplier,
+        foodType,
+        quantity
+    });
+    
+    // Update backend
+    try {
+        const response = await fetch('/api/add-food', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quantity })
+        });
+        
+        const data = await response.json();
+        totalFoodStock = data.foodStock;
+        document.getElementById('food-stock-display').textContent = totalFoodStock;
+        
+        hideAddFoodForm();
+        displayDonations();
+        alert(`✅ Added ${quantity} kg of food!`);
+    } catch (error) {
+        console.error('Error adding food:', error);
+    }
+}
+
+async function runAllocation() {
+    const algorithm = document.getElementById('sort-algorithm').value;
+    let foodStock = parseInt(document.getElementById('allocation-food-stock').value);
+    
+    if (isNaN(foodStock)) foodStock = totalFoodStock;
+    
+    try {
+        const response = await fetch('/api/allocate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ algorithm: parseInt(algorithm), food_stock: foodStock })
+        });
+        
+        const data = await response.json();
+        allocationResults = data.results;
+        
+        displayAllocationResults(allocationResults);
+        
+        // Update food stock display
+        totalFoodStock = data.remainingFood;
+        document.getElementById('food-stock-display').textContent = totalFoodStock;
+        
+        // Show summary
+        const summary = document.getElementById('allocation-summary');
+        summary.innerHTML = `
+            <strong>📊 Allocation Summary</strong><br>
+            Algorithm: ${data.algorithm}<br>
+            Time Complexity: ${data.timeComplexity}<br>
+            Space Complexity: ${data.spaceComplexity}<br>
+            Total Allocated: ${data.totalAllocated} kg<br>
+            Remaining Food: ${data.remainingFood} kg<br>
+            Efficiency: ${data.efficiency.toFixed(2)}%
+        `;
+        
+        // Update complexity tab
+        updateComplexityAnalysis(data.algorithm, data.timeComplexity, data.spaceComplexity);
+        
+    } catch (error) {
+        console.error('Error running allocation:', error);
+    }
+}
+
+// ============================================
+// FRONTEND ALGORITHMS (50% of total algorithms)
+// ============================================
+
+// ALGORITHM 1: Table Sorting (JavaScript) - O(n log n)
+let currentSortColumn = 'id';
+let currentSortOrder = 'desc';
+
+function sortByColumn(column) {
+    if (currentSortColumn === column) {
+        currentSortOrder = currentSortOrder === 'desc' ? 'asc' : 'desc';
+    } else {
+        currentSortColumn = column;
+        currentSortOrder = 'desc';
+    }
+    
+    const sortedNGOs = [...ngos];
+    
+    // JavaScript sorting algorithm - O(n log n)
+    sortedNGOs.sort((a, b) => {
+        let aVal = a[column];
+        let bVal = b[column];
+        
+        if (typeof aVal === 'string') {
+            aVal = aVal.toLowerCase();
+            bVal = bVal.toLowerCase();
+        }
+        
+        if (currentSortOrder === 'desc') {
+            return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+        } else {
+            return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+        }
+    });
+    
+    displayNGOs(sortedNGOs);
+}
+
+// ALGORITHM 2: Search/Filter Algorithm (JavaScript) - O(n)
+function filterNGOs(searchTerm) {
+    if (!searchTerm.trim()) {
+        displayNGOs(ngos);
+        return;
+    }
+    
+    // Linear search algorithm - O(n)
+    const filtered = ngos.filter(ngo => 
+        ngo.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        ngo.id.toString().includes(searchTerm)
+    );
+    
+    displayNGOs(filtered);
+}
+
+// ALGORITHM 3: Pagination Algorithm (JavaScript) - O(n)
+let currentPage = 1;
+const PAGE_SIZE = 10;
+
+function paginateData(data, page) {
+    const start = (page - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    return data.slice(start, end);
+}
+
+// ALGORITHM 4: Priority Color Mapping (JavaScript) - O(1)
+function getPriorityColor(score) {
+    if (!score || score === 0) return '#e5e7eb';
+    if (score >= 800) return '#fee2e2';  // High priority - Light Red
+    if (score >= 500) return '#fed7aa';  // Medium priority - Light Orange
+    if (score >= 300) return '#fef9c3';  // Low-medium - Light Yellow
+    return '#dcfce7';                     // Low priority - Light Green
+}
+
+// ALGORITHM 5: Statistics Calculation (JavaScript) - O(n)
+function calculateStatistics() {
+    if (ngos.length === 0) return null;
+    
+    let totalBeneficiaries = 0;
+    let totalRequested = 0;
+    let maxUrgency = 0;
+    
+    // Linear pass - O(n)
+    for (const ngo of ngos) {
+        totalBeneficiaries += ngo.beneficiaries;
+        totalRequested += ngo.quantity;
+        if (ngo.urgency > maxUrgency) maxUrgency = ngo.urgency;
+    }
+    
+    return {
+        totalNGOs: ngos.length,
+        totalBeneficiaries,
+        totalRequested,
+        avgBeneficiaries: totalBeneficiaries / ngos.length,
+        avgRequested: totalRequested / ngos.length,
+        maxUrgency
+    };
+}
+
+// ALGORITHM 6: Binary Search for NGO (JavaScript) - O(log n)
+function binarySearchNGO(ngoId) {
+    // First sort by ID
+    const sorted = [...ngos].sort((a, b) => a.id - b.id);
+    
+    let left = 0;
+    let right = sorted.length - 1;
+    
+    while (left <= right) {
+        const mid = Math.floor((left + right) / 2);
+        
+        if (sorted[mid].id === ngoId) {
+            return sorted[mid];
+        } else if (sorted[mid].id < ngoId) {
+            left = mid + 1;
+        } else {
+            right = mid - 1;
+        }
+    }
+    
+    return null;
+}
+
+// ALGORITHM 7: QuickSort for Frontend Display (JavaScript)
+function quickSortFrontend(data, key) {
+    if (data.length <= 1) return data;
+    
+    const pivot = data[0];
+    const left = [];
+    const right = [];
+    
+    for (let i = 1; i < data.length; i++) {
+        if (data[i][key] > pivot[key]) {
+            left.push(data[i]);
+        } else {
+            right.push(data[i]);
+        }
+    }
+    
+    return [...quickSortFrontend(left, key), pivot, ...quickSortFrontend(right, key)];
+}
+
+// ALGORITHM 8: Generate Report (JavaScript) - O(n)
+function generateReport() {
+    const stats = calculateStatistics();
+    const date = new Date().toLocaleString();
+    
+    let report = `
+╔══════════════════════════════════════════════════════════════╗
+║           NGO FOOD SUPPLIER SYSTEM - FULL REPORT             ║
+╚══════════════════════════════════════════════════════════════╝
+
+📅 Report Generated: ${date}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 SYSTEM OVERVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Project: NGO Food Supplier System
+Algorithm: Greedy Allocation + Priority-Based Sorting
+Formula: Priority = (Urgency × 60) + (Beneficiaries × 40)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏢 NGOS REGISTERED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total NGOs: ${stats?.totalNGOs || 0}
+Total Beneficiaries: ${stats?.totalBeneficiaries || 0}
+Total Food Requested: ${stats?.totalRequested || 0} kg
+Average Beneficiaries per NGO: ${stats?.avgBeneficiaries?.toFixed(0) || 0}
+Average Food Requested: ${stats?.avgRequested?.toFixed(0) || 0} kg
+
+NGO Details:
+`;
+    
+    for (const ngo of ngos) {
+        report += `
+  • ${ngo.name}
+    ├─ ID: ${ngo.id}
+    ├─ Urgency: ${ngo.urgency}/10
+    ├─ Beneficiaries: ${ngo.beneficiaries}
+    ├─ Requested: ${ngo.quantity} kg
+    └─ Priority Score: ${ngo.priorityScore || 'Not Calculated'}`;
+    }
+    
+    report += `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🍕 FOOD INVENTORY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Current Food Stock: ${totalFoodStock} kg
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚙️ LAST ALLOCATION RESULTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+`;
+    
+    if (allocationResults.length > 0) {
+        for (const result of allocationResults) {
+            report += `
+  • ${result.ngoName}
+    ├─ Priority: ${result.priorityScore}
+    ├─ Requested: ${result.requested} kg
+    ├─ Allocated: ${result.allocated} kg
+    └─ Status: ${result.status}`;
+        }
+    } else {
+        report += "  No allocation performed yet.\n";
+    }
+    
+    report += `
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📈 ALGORITHM COMPLEXITY ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Priority Calculation (C++):
+  Time: O(n) | Space: O(1)
+
+Sorting Algorithm (C++):
+  Time: O(n log n) | Space: O(n)
+
+Greedy Allocation (C++):
+  Time: O(n) | Space: O(1)
+
+Frontend Algorithms (JavaScript):
+  ├─ Table Sorting: O(n log n)
+  ├─ Search/Filter: O(n)
+  ├─ Statistics: O(n)
+  └─ Binary Search: O(log n)
+
+Overall Complexity:
+  Time: O(n log n) | Space: O(n)
+
+╔══════════════════════════════════════════════════════════════╗
+║                    END OF REPORT                             ║
+╚══════════════════════════════════════════════════════════════╝
+`;
+    
+    const reportDiv = document.getElementById('report-content');
+    reportDiv.innerHTML = `<pre>${report}</pre>`;
+}
+
+function updateComplexityAnalysis(algorithm, timeComplexity, spaceComplexity) {
+    const detailedDiv = document.getElementById('detailed-complexity');
+    if (detailedDiv) {
+        detailedDiv.innerHTML = `
+═══════════════════════════════════════════════════
+         DETAILED COMPLEXITY ANALYSIS
+═══════════════════════════════════════════════════
+
+📊 SORTING ALGORITHM USED:
+   Algorithm: ${algorithm}
+   Time Complexity: ${timeComplexity}
+   Space Complexity: ${spaceComplexity}
+
+🎯 GREEDY ALLOCATION (C++ Backend):
+   Time Complexity: O(n)
+   Space Complexity: O(1)
+   Strategy: Allocate to highest priority NGOs first
+
+🔍 FRONTEND ALGORITHMS (JavaScript):
+   ├─ Table Sorting: O(n log n)
+   ├─ Search/Filter: O(n)
+   ├─ Pagination: O(n)
+   ├─ Statistics Calculation: O(n)
+   ├─ Binary Search: O(log n)
+   └─ Priority Coloring: O(1)
+
+📦 OVERALL SYSTEM COMPLEXITY:
+   Time Complexity: O(n log n)
+   Space Complexity: O(n)
+
+═══════════════════════════════════════════════════
+`;
+    }
+}
+
+// ============================================
+// DISPLAY FUNCTIONS
+// ============================================
+function displayNGOs(data) {
+    const tbody = document.getElementById('ngo-tbody');
+    tbody.innerHTML = '';
+    
+    if (!data || data.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center">No NGOs registered</td></tr>';
+        return;
+    }
+    
+    for (const ngo of data) {
+        const row = tbody.insertRow();
+        row.insertCell(0).textContent = ngo.id;
+        row.insertCell(1).textContent = ngo.name;
+        row.insertCell(2).textContent = ngo.urgency;
+        row.insertCell(3).textContent = ngo.beneficiaries;
+        row.insertCell(4).textContent = ngo.quantity;
+        row.insertCell(5).textContent = ngo.priorityScore || '-';
+        
+        // Apply priority color (frontend algorithm)
+        if (ngo.priorityScore) {
+            row.cells[5].style.backgroundColor = getPriorityColor(ngo.priorityScore);
+        }
+        
+        const actionsCell = row.insertCell(6);
+        actionsCell.innerHTML = `<button class="btn" style="background:#ef4444;color:white;padding:5px 10px" 
+                                  onclick="deleteNGO(${ngo.id})">Delete</button>`;
+    }
+}
+
+function displayDonations() {
+    const tbody = document.getElementById('donation-tbody');
+    tbody.innerHTML = '';
+    
+    for (const donation of donations.slice(0, 10)) {
+        const row = tbody.insertRow();
+        row.insertCell(0).textContent = donation.date;
+        row.insertCell(1).textContent = donation.supplier;
+        row.insertCell(2).textContent = donation.foodType;
+        row.insertCell(3).textContent = donation.quantity;
+    }
+}
+
+function displayAllocationResults(results) {
+    const tbody = document.getElementById('allocation-tbody');
+    tbody.innerHTML = '';
+    
+    if (!results || results.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center">Run allocation to see results</td></tr>';
+        return;
+    }
+    
+    for (const result of results) {
+        const row = tbody.insertRow();
+        row.insertCell(0).textContent = result.ngoName;
+        row.insertCell(1).textContent = result.priorityScore;
+        row.insertCell(2).textContent = result.requested;
+        row.insertCell(3).textContent = result.allocated;
+        
+        const statusCell = row.insertCell(4);
+        statusCell.textContent = result.status;
+        
+        if (result.status === 'FULL') {
+            statusCell.className = 'status-full';
+        } else if (result.status === 'PARTIAL') {
+            statusCell.className = 'status-partial';
+        } else {
+            statusCell.className = 'status-none';
+        }
+    }
+}
+
+// ============================================
+// UTILITY FUNCTIONS
+// ============================================
+function showAddNGOForm() {
+    document.getElementById('add-ngo-form').style.display = 'flex';
+}
+
+function hideAddNGOForm() {
+    document.getElementById('add-ngo-form').style.display = 'none';
+    document.getElementById('ngo-name').value = '';
+    document.getElementById('ngo-urgency').value = '5';
+    document.getElementById('ngo-beneficiaries').value = '100';
+    document.getElementById('ngo-quantity').value = '50';
+}
+
+function showAddFoodForm() {
+    document.getElementById('add-food-form').style.display = 'flex';
+}
+
+function hideAddFoodForm() {
+    document.getElementById('add-food-form').style.display = 'none';
+    document.getElementById('supplier-name').value = '';
+    document.getElementById('food-type').value = '';
+    document.getElementById('food-quantity').value = '50';
+}
+
+async function deleteNGO(id) {
+    if (confirm('Are you sure you want to delete this NGO?')) {
+        try {
+            const response = await fetch(`/api/ngos/${id}`, {
+                method: 'DELETE'
+            });
+            
+            if (response.ok) {
+                loadNGOs();
+                alert('NGO deleted successfully!');
+            }
+        } catch (error) {
+            console.error('Error deleting NGO:', error);
+        }
+    }
+}
+
+// Update food stock display periodically
+setInterval(loadFoodStock, 5000);
